@@ -7,6 +7,9 @@ if (!defined('ABSPATH')) {
 // Add admin menu
 add_action('admin_menu', 'nine_gods_admin_menu');
 
+// Enable custom fields in post editor
+add_action('admin_init', 'nine_gods_enable_custom_fields');
+
 function nine_gods_admin_menu() {
     add_options_page(
         '9 Gods Meme Explainer',
@@ -17,11 +20,38 @@ function nine_gods_admin_menu() {
     );
 }
 
+function nine_gods_enable_custom_fields() {
+    // Force custom fields to be visible in post editor
+    add_meta_box('postcustom', __('Custom Fields'), 'post_custom_meta_box', 'post', 'normal', 'core');
+}
+
 // Admin page content
 function nine_gods_admin_page() {
     // Handle form submission
     if (isset($_POST['submit']) && wp_verify_nonce($_POST['9gods_nonce'], '9gods_settings')) {
         update_option('9gods_openai_api_key', sanitize_text_field($_POST['openai_api_key']));
+        
+        // Handle cron interval setting
+        $cron_interval = sanitize_text_field($_POST['cron_interval']);
+        $old_interval = get_option('9gods_cron_interval', 'hourly');
+        
+        // Handle batch size setting
+        $batch_size = intval($_POST['batch_size']);
+        if ($batch_size < 1) $batch_size = 1;
+        if ($batch_size > 20) $batch_size = 20;
+        update_option('9gods_batch_size', $batch_size);
+        
+        if ($cron_interval !== $old_interval) {
+            // Clear existing cron job
+            wp_clear_scheduled_hook('9gods_cron_event');
+            
+            // Schedule new cron job with new interval
+            if (!wp_next_scheduled('9gods_cron_event')) {
+                wp_schedule_event(time(), $cron_interval, '9gods_cron_event');
+            }
+            
+            update_option('9gods_cron_interval', $cron_interval);
+        }
         
         // Handle avatar upload
         if (!empty($_FILES['gorgocutie_avatar']['name'])) {
@@ -43,6 +73,8 @@ function nine_gods_admin_page() {
     
     $api_key = get_option('9gods_openai_api_key', '');
     $avatar_url = get_option('9gods_gorgocutie_avatar', '');
+    $cron_interval = get_option('9gods_cron_interval', 'hourly');
+    $batch_size = get_option('9gods_batch_size', 3);
     ?>
     <div class="wrap">
         <h1>🐍 9 Gods Meme Explainer Settings</h1>
@@ -56,6 +88,28 @@ function nine_gods_admin_page() {
                     <td>
                         <input type="password" name="openai_api_key" value="<?php echo esc_attr($api_key); ?>" class="regular-text" />
                         <p class="description">Your OpenAI API key for GPT-4 Vision access.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Processing Frequency</th>
+                    <td>
+                        <select name="cron_interval" class="regular-text">
+                            <option value="every_five_minutes" <?php selected($cron_interval, 'every_five_minutes'); ?>>Every 5 Minutes (Fast)</option>
+                            <option value="every_fifteen_minutes" <?php selected($cron_interval, 'every_fifteen_minutes'); ?>>Every 15 Minutes</option>
+                            <option value="thirtymin" <?php selected($cron_interval, 'thirtymin'); ?>>Every 30 Minutes</option>
+                            <option value="hourly" <?php selected($cron_interval, 'hourly'); ?>>Every Hour (Default)</option>
+                            <option value="every_three_hours" <?php selected($cron_interval, 'every_three_hours'); ?>>Every 3 Hours</option>
+                            <option value="twicedaily" <?php selected($cron_interval, 'twicedaily'); ?>>Twice Daily</option>
+                            <option value="daily" <?php selected($cron_interval, 'daily'); ?>>Daily (Slow)</option>
+                        </select>
+                        <p class="description">How often to automatically process new posts. Faster = more API costs.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Batch Size</th>
+                    <td>
+                        <input type="number" name="batch_size" value="<?php echo esc_attr($batch_size); ?>" min="1" max="20" class="small-text" />
+                        <p class="description">How many posts to process at once. Lower = less timeouts. Higher = faster processing.</p>
                     </td>
                 </tr>
                 <tr>
@@ -121,6 +175,43 @@ function nine_gods_admin_page() {
         });
         </script>
         
+        <script>
+        // Function to show full explanation text
+        function showExplanation(postId) {
+            // Find the explanation text from the table
+            var explanationData = {
+                <?php foreach ($posts as $post): ?>
+                    <?php if ($post->explanation_text): ?>
+                        <?php echo $post->ID; ?>: <?php echo json_encode($post->explanation_text); ?>,
+                    <?php endif; ?>
+                <?php endforeach; ?>
+            };
+            
+            if (explanationData[postId]) {
+                // Create modal-like display
+                var modal = document.createElement('div');
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center;';
+                
+                var content = document.createElement('div');
+                content.style.cssText = 'background: white; padding: 20px; border-radius: 5px; max-width: 80%; max-height: 80%; overflow-y: auto; position: relative;';
+                
+                content.innerHTML = '<h3>🐍 Gorgocutie\'s Explanation</h3>' +
+                                  '<div style="line-height: 1.6; margin-bottom: 20px;">' + explanationData[postId].replace(/\n/g, '<br>') + '</div>' +
+                                  '<button onclick="this.closest(\'div[style*=\"position: fixed\"]\').remove()" style="background: #0073aa; color: white; border: none; padding: 10px 20px; border-radius: 3px; cursor: pointer;">Close</button>';
+                
+                modal.appendChild(content);
+                document.body.appendChild(modal);
+                
+                // Close on background click
+                modal.addEventListener('click', function(e) {
+                    if (e.target === modal) {
+                        modal.remove();
+                    }
+                });
+            }
+        }
+        </script>
+        
         <?php nine_gods_display_status_table(); ?>
     </div>
     <?php
@@ -137,8 +228,8 @@ function nine_gods_display_status_table() {
                pm2.meta_value as explanation_text,
                pm3.meta_value as thumbnail_id
         FROM {$wpdb->posts} p
-        LEFT JOIN {$wpdb->postmeta} pm1 ON p.ID = pm1.post_id AND pm1.meta_key = '_9gods_explanation_status'
-        LEFT JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id AND pm2.meta_key = '_9gods_explanation_text'
+        LEFT JOIN {$wpdb->postmeta} pm1 ON p.ID = pm1.post_id AND pm1.meta_key = '9gods_explanation_status'
+        LEFT JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id AND pm2.meta_key = '9gods_explanation_text'
         LEFT JOIN {$wpdb->postmeta} pm3 ON p.ID = pm3.post_id AND pm3.meta_key = '_thumbnail_id'
         WHERE p.post_type = 'post' 
         AND p.post_status = 'publish'
@@ -228,6 +319,9 @@ function nine_gods_display_status_table() {
                             </a>
                         <?php endif; ?>
                         <a href="<?php echo get_permalink($post->ID); ?>" target="_blank" class="button button-small">View</a>
+                        <?php if ($post->explanation_text): ?>
+                            <button type="button" class="button button-small" onclick="showExplanation(<?php echo $post->ID; ?>)">Full Text</button>
+                        <?php endif; ?>
                     </td>
                 </tr>
             <?php endforeach; ?>

@@ -11,6 +11,18 @@ add_action('9gods_cron_event', 'nine_gods_process_batch');
 add_filter('cron_schedules', 'nine_gods_add_cron_interval');
 
 function nine_gods_add_cron_interval($schedules) {
+    $schedules['every_five_minutes'] = array(
+        'interval' => 300, // 5 minutes in seconds
+        'display'  => esc_html__('Every 5 Minutes'),
+    );
+    $schedules['every_fifteen_minutes'] = array(
+        'interval' => 900, // 15 minutes in seconds
+        'display'  => esc_html__('Every 15 Minutes'),
+    );
+    $schedules['thirtymin'] = array(
+        'interval' => 1800, // 30 minutes in seconds
+        'display'  => esc_html__('Every 30 Minutes'),
+    );
     $schedules['every_three_hours'] = array(
         'interval' => 10800, // 3 hours in seconds
         'display'  => esc_html__('Every 3 Hours'),
@@ -34,8 +46,8 @@ function nine_gods_process_batch() {
         return; // Nothing to process
     }
     
-    // Process up to 5 posts per batch to avoid timeouts
-    $batch_size = 5;
+    // Process up to X posts per batch to avoid timeouts (configurable)
+    $batch_size = get_option('9gods_batch_size', 3);
     $processed = 0;
     
     foreach ($posts_to_process as $post_id) {
@@ -44,25 +56,25 @@ function nine_gods_process_batch() {
         }
         
         // Mark as processing to avoid duplicate processing
-        update_post_meta($post_id, '_9gods_explanation_status', 'processing');
+        update_post_meta($post_id, '9gods_explanation_status', 'processing');
         
         // Process the post
         $result = nine_gods_process_single_post($post_id);
         
         if ($result['success']) {
-            update_post_meta($post_id, '_9gods_explanation_text', $result['explanation']);
-            update_post_meta($post_id, '_9gods_explanation_status', 'done');
+            update_post_meta($post_id, '9gods_explanation_text', $result['explanation']);
+            update_post_meta($post_id, '9gods_explanation_status', 'done');
             error_log("9 Gods: Successfully processed post ID {$post_id}");
         } else {
-            update_post_meta($post_id, '_9gods_explanation_status', 'failed');
+            update_post_meta($post_id, '9gods_explanation_status', 'failed');
             update_post_meta($post_id, '_9gods_explanation_error', $result['error']);
             error_log("9 Gods: Failed to process post ID {$post_id}: " . $result['error']);
         }
         
         $processed++;
         
-        // Small delay to be respectful to the API
-        sleep(1);
+        // Longer delay to be respectful to the API and avoid timeouts
+        sleep(2);
     }
     
     error_log("9 Gods: Processed {$processed} posts in this batch");
@@ -148,8 +160,8 @@ function nine_gods_manual_process($post_id = null) {
         // Process specific post
         $result = nine_gods_process_single_post($post_id);
         if ($result['success']) {
-            update_post_meta($post_id, '_9gods_explanation_text', $result['explanation']);
-            update_post_meta($post_id, '_9gods_explanation_status', 'done');
+            update_post_meta($post_id, '9gods_explanation_text', $result['explanation']);
+            update_post_meta($post_id, '9gods_explanation_status', 'done');
         } else {
             update_post_meta($post_id, '_9gods_explanation_status', 'failed');
             update_post_meta($post_id, '_9gods_explanation_error', $result['error']);
